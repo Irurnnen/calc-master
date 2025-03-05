@@ -1,300 +1,201 @@
 package calc
 
 import (
-	"regexp"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/Irurnnen/calc-master/pkg/increment"
 )
 
-const disallowedSymbolsRegular = `[^0-9\.+\-*\/()^\s]`
-const spacesRegular = `\s`
-
-var operands = "+-*/^"
-var priority = map[string]int{"+": 1, "-": 1, "*": 2, "/": 2, "^": 3}
+var operands = "+-*/"
 
 type ASTNodeType int
 
 const (
-	TypeNumber ASTNodeType = iota
-	TypeOperation
+	NumberType ASTNodeType = iota
+	OperationType
 )
 
-type Operation string
-
-const (
-	OperationPlus     = "+"
-	OperationMinus    = "-"
-	OperationMultiply = "*"
-	OperationDivision = "/"
-)
-
+// Структура для узла AST
 type ASTNode struct {
-	Type     ASTNodeType
-	Value    float64
-	Operator Operation
-	Left     *ASTNode
-	Right    *ASTNode
+	Type     ASTNodeType // Тип узла: "number" или "operation"
+	Value    float64     // Значение (для чисел)
+	Operator string      // Оператор (для операций)
+	Left     *ASTNode    // Левый потомок
+	Right    *ASTNode    // Правый потомок
 }
 
-func NewNumberASTNode(token string) (*ASTNode, error) {
-	num, err := strconv.ParseFloat(token, 64)
-	if err != nil {
-		return nil, ErrParseFloat
+func NewNumberASTNode(value string) (*ASTNode, error) {
+	if isNumber(value) {
+		num, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return nil, ErrParseFloat
+		}
+		return &ASTNode{
+			Type:  NumberType,
+			Value: num,
+		}, nil
 	}
-	return &ASTNode{
-		Type:  TypeNumber,
-		Value: num,
-		Left:  &ASTNode{},
-		Right: &ASTNode{},
-	}, nil
+	return nil, ErrUnknown
 }
 
+// Структура для задачи
 type Task struct {
 	ID        int
 	Arg1      float64
 	Arg2      float64
-	Operation Operation
+	Operation string
 }
 
+// Структура для результата задачи
 type TaskResult struct {
 	ID     int
 	Result float64
 }
 
-func ParseExpression(expression string) (*ASTNode, error) {
-	// Checking validity of expression
-	if err := ValidateExpression(expression); err != nil {
-		return nil, err
-	}
-
-	// Tokenize expression
-	tokens := tokenize(expression)
-
-	// Validate Tokens
-	if err := ValidateTokens(tokens); err != nil {
-		return nil, err
-	}
-	// TODO: go to AST
-	// Change to postfix
-	postfixTokens := ToPostfix(tokens)
-
-	// Calculate the expression
-	result, err := parseFromRPNtoAST(postfixTokens)
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
+// Структура для выражения
+type Expression struct {
+	ID     int
+	Status string
+	Result float64
+	AST    *ASTNode
 }
 
-func ValidateExpression(expression string) error {
-	// Check disallowed symbols
-	re := regexp.MustCompile(disallowedSymbolsRegular)
-	if re.MatchString(expression) {
-		return ErrExtraCharacters
-	}
-
-	// Check correction of brackets
-	var bracketBalance int
-	for _, v := range expression {
-		if v == '(' {
-			bracketBalance++
-		} else if v == ')' {
-			bracketBalance--
-			if bracketBalance < 0 {
-				return ErrWrongBracketOrder
-			}
-		}
-	}
-	if bracketBalance != 0 {
-		return ErrUnpairedBracket
-	}
-
-	return nil
+// Вспомогательные функции
+func isNumber(token string) bool {
+	_, err := strconv.ParseFloat(token, 64)
+	return err == nil
 }
 
-func RemoveSpaces(expression string) string {
-	re := regexp.MustCompile(spacesRegular)
-	return re.ReplaceAllString(expression, "")
+func IsOperator(token string) bool {
+	return strings.Contains(operands, token)
 }
 
-func tokenize(expression string) []string {
-	var tokens []string
-	var number string
-
-	// Delete all space in expression
-	expression = RemoveSpaces(expression)
-
-	for _, character := range expression {
-		if IsNumber(string(character)) {
-			number += string(character)
-			continue
-		}
-		if number != "" {
-			tokens = append(tokens, number)
-			number = ""
-		}
-		tokens = append(tokens, string(character))
+func ParseNumber(node *ASTNode) float64 {
+	if node.Type == NumberType {
+		return node.Value
 	}
-	if len(number) != 0 {
-		tokens = append(tokens, number)
-	}
-	return tokens
+	return 0
 }
 
-// ValidateTokens checks tokens for several errors: ErrEmptyExpression,
-// ErrMultipleOperands, ErrMultipleNumbers, ErrExtraOperands
-func ValidateTokens(tokens []string) error {
-	// Check exists of expression
-	if len(tokens) == 0 {
-		return ErrEmptyExpression
-	}
-	// Check multiple operators or multiple numbers
-	for i := 1; i < len(tokens); i++ {
-		if IsOperand(tokens[i-1]) && IsOperand(tokens[i]) {
-			return ErrMultipleOperands
-		}
-		if IsNumber(tokens[i-1]) && IsNumber(tokens[i]) {
-			return ErrMultipleNumbers
-		}
-	}
-
-	// Check operands at the beginning and end
-	if IsOperand(tokens[0]) || IsOperand(tokens[len(tokens)-1]) {
-		return ErrExtraOperands
-	}
-
-	return nil
-}
-
-// IsNumber returns the true if token is a number otherwise false
-func IsNumber(token string) bool {
-	for _, v := range token {
-		if v != '.' && (v < '0' || v > '9') {
-			return false
-		}
-
-	}
-	return true
-}
-
-// IsOperand returns the true if token is an operand otherwise false
-func IsOperand(token string) bool {
-	return strings.Contains(operands, token) && len(token) == 1
-}
-
-// To Postfix changes the order of tokens to reverse Polish notation
-func ToPostfix(tokens []string) []string {
-	var stack []string
+func InfixToRPN(expr string) (string, error) {
 	var output []string
+	var stack []string
+	precedence := map[string]int{"+": 1, "-": 1, "*": 2, "/": 2}
 
+	tokens := strings.Fields(expr)
 	for _, token := range tokens {
-		if IsNumber(token) {
+		if isNumber(token) {
 			output = append(output, token)
-			continue
-		}
-		switch token {
-		case "(":
-			stack = append(stack, token)
-		case ")":
-			for len(stack) != 0 && stack[len(stack)-1] != "(" {
-				output = append(output, stack[len(stack)-1])
-				stack = stack[:len(stack)-1]
-			}
-			if len(stack) != 0 {
-				stack = stack[:len(stack)-1]
-			}
-		default:
-			for len(stack) != 0 && stack[len(stack)-1] != "(" && priority[token] <= priority[stack[len(stack)-1]] {
+		} else if IsOperator(token) {
+			for len(stack) > 0 && precedence[stack[len(stack)-1]] >= precedence[token] {
 				output = append(output, stack[len(stack)-1])
 				stack = stack[:len(stack)-1]
 			}
 			stack = append(stack, token)
+		} else if token == "(" {
+			stack = append(stack, token)
+		} else if token == ")" {
+			for len(stack) > 0 && stack[len(stack)-1] != "(" {
+				output = append(output, stack[len(stack)-1])
+				stack = stack[:len(stack)-1]
+			}
+			if len(stack) == 0 {
+				return "", errors.New("mismatched parentheses")
+			}
+			stack = stack[:len(stack)-1]
+		} else {
+			return "", fmt.Errorf("invalid token: %s", token)
 		}
 	}
-	for len(stack) != 0 {
+
+	for len(stack) > 0 {
+		if stack[len(stack)-1] == "(" || stack[len(stack)-1] == ")" {
+			return "", errors.New("mismatched parentheses")
+		}
 		output = append(output, stack[len(stack)-1])
 		stack = stack[:len(stack)-1]
 	}
-	return output
+
+	return strings.Join(output, " "), nil
 }
 
-// parseFromRPNtoAST solves tokens in Reverse Polish notation. This function return float64
-func parseFromRPNtoAST(tokens []string) (*ASTNode, error) {
+// Создает AST из RPN
+func CreateASTFromRPN(rpn string) (*ASTNode, error) {
 	stack := []*ASTNode{}
+	tokens := strings.Fields(rpn)
+
 	for _, token := range tokens {
-		// If token is number
-		if IsNumber(token) {
+		if isNumber(token) {
 			node, err := NewNumberASTNode(token)
 			if err != nil {
 				return nil, err
 			}
 			stack = append(stack, node)
-			// stack = append(stack, num)
-			continue
+		} else if IsOperator(token) {
+			if len(stack) < 2 {
+				return nil, ErrExtraOperands
+			}
+			right := stack[len(stack)-1]
+			left := stack[len(stack)-2]
+			stack = stack[:len(stack)-2]
+			stack = append(stack, &ASTNode{
+				Type:     OperationType,
+				Operator: token,
+				Left:     left,
+				Right:    right,
+			})
+		} else {
+			return nil, fmt.Errorf("invalid token: %s", token)
 		}
-		// If token is operand
-		if len(stack) < 2 {
-			return nil, ErrExtraOperands
-		}
-
-		// Extract left and right Nodes
-		left, right := stack[len(stack)-2], stack[len(stack)-1]
-		stack = stack[:len(stack)-2]
-
-		// Create new Node
-		node := &ASTNode{
-			Type:     TypeNumber,
-			Value:    0,
-			Operator: Operation(token),
-			Left:     left,
-			Right:    right,
-		}
-		stack = append(stack, node)
 	}
 
-	// Check size of stack
 	if len(stack) != 1 {
-		return nil, nil
+		return nil, errors.New("invalid RPN expression")
 	}
 
 	return stack[0], nil
 }
 
-func splitASTIntoTasks(node *ASTNode) ([]Task, map[int]*ASTNode) {
-	tasks := []Task{}
-	nodeToTaskID := make(map[int]*ASTNode)
+// Разделяет AST на задачи
+func SplitASTIntoTasks(node *ASTNode) []Task {
+	var tasks []Task
+	var taskID int
 
-	var traverse func(*ASTNode) int
-	traverse = func(n *ASTNode) int {
-		// Numbers doesn't need to solve
-		if n.Type == TypeNumber {
-			return -1
+	var traverse func(*ASTNode)
+	traverse = func(n *ASTNode) {
+		if n.Type == NumberType {
+			return // Числа не требуют задач
 		}
 
-		leftID := traverse(n.Left)
-		rightID := traverse(n.Right)
+		// Рекурсивно обходим левую и правую части
+		traverse(n.Left)
+		traverse(n.Right)
 
-		// Create task
-		increment.GlobalIncrement.Add()
+		// Создаем задачу для текущей операции
+		taskID++
 		task := Task{
-			ID:        increment.GlobalIncrement.Get(),
-			Arg1:      parseNumber(n.Left),
-			Arg2:      parseNumber(n.Right),
-			Operation: n.Operator,
+			ID:        taskID,
+			Arg1:      ParseNumber(n.Left),  // Левый операнд
+			Arg2:      ParseNumber(n.Right), // Правый операнд
+			Operation: n.Operator,           // Операция
 		}
 		tasks = append(tasks, task)
-		nodeToTaskID[increment.GlobalIncrement.Get()] = n
-
-		return increment.GlobalIncrement.Get()
 	}
+
+	// Начинаем обход с корня AST
+	traverse(node)
+	return tasks
 }
 
-func parseNumber(node *ASTNode) float64 {
-	if node.Type == TypeNumber {
-		return node.Value
+// Обновляет AST с результатом задачи
+func UpdateASTWithResult(node *ASTNode, taskID int, result float64) {
+	if node == nil {
+		return
 	}
-	return 0
+
+	if node.Type == OperationType {
+		UpdateASTWithResult(node.Left, taskID, result)
+		UpdateASTWithResult(node.Right, taskID, result)
+	}
 }
